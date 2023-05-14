@@ -249,6 +249,11 @@ fn remove_mod_config(config_state: &mut ResMut<ConfigState>, mod_name: String)
 fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<ConfigState>)
 {
     ui_state.mods_path = Path::join(&std::env::current_dir().unwrap(), "Mods");
+    match fs::create_dir(&ui_state.mods_path)
+    {
+        Ok(_) => (),
+        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not create Mods directory! {}", e))
+    }
     let mod_section = config_state.config.section(Some("Mods"));
     match mod_section {
         Some(mod_section) => {
