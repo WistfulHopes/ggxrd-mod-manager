@@ -54,7 +54,7 @@ fn init_update(mut ui_state: ResMut<ManagerState>) {
                 self_update::Status::Updated(_) => 
                 {
                     ui_state.log.add_to_log(LogType::Info, "Update successful! Restarting...".to_owned());
-                    Command::new("ggxrd-mod-manager.exe").spawn().unwrap();
+                    Command::new("ggxrd-mod-manager-x86_64-pc-windows-msvc.exe").spawn().unwrap();
                     exit(0)
                 }
             }
@@ -267,7 +267,7 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
                                     match mod_name {
                                         Some(name) => mod_data.name = name.to_owned(),
                                         None => {
-                                            ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a name in the desciption section! Ignoring mod.\n", path.display()));
+                                            ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a name in the desciption section! Ignoring mod.", path.display()));
                                             continue
                                         }
                                     }
@@ -318,23 +318,23 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
                                     ui_state.mod_datas.push(mod_data);
                                 },
                                 None => {
-                                    ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a description section! Ignoring mod.\n", path.display()));
+                                    ui_state.log.add_to_log(LogType::Error, format!("The mod ini at path {} doesn't have a description section! Ignoring mod.", path.display()));
                                     continue
                                 }
                             }
                         },
                         Err(_) => {
-                            ui_state.log.add_to_log(LogType::Error, format!("Ini at path {} does not exist! Ignoring mod.\n", path.display()));
+                            ui_state.log.add_to_log(LogType::Error, format!("Ini at path {} does not exist! Ignoring mod.", path.display()));
                             continue
                         }
                     }
                 }
                 else {
-                    ui_state.log.add_to_log(LogType::Error, format!("Path {} does not exist! Ignoring mod.\n", path.display()));
+                    ui_state.log.add_to_log(LogType::Error, format!("Path {} does not exist! Ignoring mod.", path.display()));
                 }
             }
         }
-        None => ui_state.log.add_to_log(LogType::Error, "No mods found in the config ini!".to_owned()),
+        None => ui_state.log.add_to_log(LogType::Warn, "No mods found in the config ini! You probably need to install a mod.".to_owned()),
     }
     for mod_data in &mut ui_state.mod_datas {
         init_mod_config(&mut config_state, mod_data.name.clone(), mod_data);
@@ -346,7 +346,7 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
 
 fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<ConfigState>, name: String)
 {
-    let path = Path::join(&ui_state.mods_path, name).join("mod.ini");
+    let path = Path::join(&ui_state.mods_path, &name).join("mod.ini");
     if path.exists()
     {
         let mut mod_data: ModData = ModData::new();
@@ -360,7 +360,7 @@ fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Confi
                         match mod_name {
                             Some(name) => mod_data.name = name.to_owned(),
                             None => {
-                                ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a name in the desciption section! Ignoring mod.\n", path.display()));
+                                ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a name in the desciption section! Ignoring mod.", path.display()));
                             }
                         }
                         let mod_author = desc.get("Author");
@@ -394,17 +394,29 @@ fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Confi
                         ui_state.mod_datas.push(mod_data);
                     },
                     None => {
-                        ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a description section! Ignoring mod.\n", &path.display()));
+                        mod_data.name = name.clone();
+                        mod_data.path = path.to_path_buf();
+                        mod_data.write_data().unwrap_or_default();
+                        init_mod_config(config_state, name, &mut mod_data);
+                        write_config(ui_state, config_state);
+                        ui_state.mod_datas.push(mod_data);
+                        ui_state.log.add_to_log(LogType::Warn, format!("The mod ini at path {} doesn't have a description section! Created one automatically.", &path.display()));
                     }
                 }
             },
             Err(_) => {
-                ui_state.log.add_to_log(LogType::Error, format!("Ini at path {} does not exist! Ignoring mod.\n", &path.display()));
+                mod_data.name = name.clone();
+                mod_data.path = path.to_path_buf();
+                mod_data.write_data().unwrap_or_default();
+                init_mod_config(config_state, name, &mut mod_data);
+                write_config(ui_state, config_state);
+                ui_state.mod_datas.push(mod_data);
+                ui_state.log.add_to_log(LogType::Warn, format!("No mod ini at path {}! Created one automatically.", &path.display()));
             }
         }
     }
     else {
-        ui_state.log.add_to_log(LogType::Error, format!("Path {} does not exist! Ignoring mod.\n", &path.display()));
+        ui_state.log.add_to_log(LogType::Warn, format!("Path {} does not exist! Ignoring mod.", &path.display()));
     }
 }
 
@@ -753,31 +765,31 @@ fn ui_system(mut ui_state: ResMut<ManagerState>,
                 }
                 else {
                     ui_state.mod_edit.path = Path::join(&ui_state.mods_path, &ui_state.mod_edit.name);
-                    let final_mod: ModData = ui_state.mod_edit.clone();
-                    match ui_state.mod_edit.write_data() {
-                        Ok(()) => {
-                            if final_mod.name != ui_state.mod_datas[selected_index].name {
-                                match fs::rename(ui_state.mod_datas[selected_index].path.clone(), final_mod.path.clone())
-                                {
-                                    Ok(_) => {
+                    match fs::rename(ui_state.mod_datas[selected_index].path.clone(), ui_state.mod_edit.path.clone())
+                    {
+                        Ok(_) => {
+                            let final_mod: ModData = ui_state.mod_edit.clone();
+                            match ui_state.mod_edit.write_data() {
+                                Ok(()) => {
+                                    if final_mod.name != ui_state.mod_datas[selected_index].name {
                                         remove_mod_config(&mut config_state, ui_state.mod_datas[selected_index].name.clone());
-                                        write_config(&mut ui_state, &mut config_state)
+                                        write_config(&mut ui_state, &mut config_state);
+                                        ui_state.mod_datas[selected_index] = final_mod;
+                                        ui_state.log.add_to_log(LogType::Info, "Mod updated!".to_owned());
+                                        set_mod_order_config(&mut ui_state, &mut config_state);
+                                        window_state.edit_open = false;            
                                     }
-                                    Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not remove directory for edited mod! {}", e)),
-                                }    
-                            }
-                            ui_state.mod_datas[selected_index] = final_mod;
-                            ui_state.log.add_to_log(LogType::Info, "Mod updated!".to_owned());
-                            set_mod_order_config(&mut ui_state, &mut config_state);
-                            window_state.edit_open = false;
-                        },
-                        Err(e) => 
-                        {
-                            ui.memory_mut(|mem|{
-                                mem.toggle_popup(error_id);
-                            });        
-                            ui_state.log.add_to_log(LogType::Error, format!("Could not edit mod! {}", e))
+                                },
+                                Err(e) => 
+                                {
+                                    ui.memory_mut(|mem|{
+                                        mem.toggle_popup(error_id);
+                                    });        
+                                    ui_state.log.add_to_log(LogType::Error, format!("Could not edit mod! {}", e))
+                                }
+                            }        
                         }
+                        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not rename directory for edited mod! {}", e)),
                     }
                 }
             }
