@@ -306,7 +306,7 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
                                             }
                                         }
                                         None => (),
-                                    }                
+                                    }
 
                                     mod_data.path = Path::join(&ui_state.mods_path, &mod_name.unwrap());
                                     mod_data.enabled = match mod_entry.1 {
@@ -388,14 +388,26 @@ fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Confi
                             Some(page) => mod_data.page = page.to_owned(),
                             None => ()
                         }
-                        mod_data.path = path.to_path_buf();
+                        
+                        match file.section(Some("Scripts"))
+                        {
+                            Some(section) => {
+                                for script in section.get_all("ScriptPackage")
+                                {
+                                    mod_data.scripts.push(script.to_owned());
+                                }
+                            }
+                            None => (),
+                        }
+
+                        mod_data.path = Path::join(&ui_state.mods_path, &name);
                         init_mod_config(config_state, mod_name.unwrap().to_owned(), &mut mod_data);
                         write_config(ui_state, config_state);
                         ui_state.mod_datas.push(mod_data);
                     },
                     None => {
                         mod_data.name = name.clone();
-                        mod_data.path = path.to_path_buf();
+                        mod_data.path = Path::join(&ui_state.mods_path, &name);
                         mod_data.write_data().unwrap_or_default();
                         init_mod_config(config_state, name, &mut mod_data);
                         write_config(ui_state, config_state);
@@ -406,7 +418,7 @@ fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Confi
             },
             Err(_) => {
                 mod_data.name = name.clone();
-                mod_data.path = path.to_path_buf();
+                mod_data.path = Path::join(&ui_state.mods_path, &name);
                 mod_data.write_data().unwrap_or_default();
                 init_mod_config(config_state, name, &mut mod_data);
                 write_config(ui_state, config_state);
@@ -777,7 +789,7 @@ fn ui_system(mut ui_state: ResMut<ManagerState>,
                                         ui_state.mod_datas[selected_index] = final_mod;
                                         ui_state.log.add_to_log(LogType::Info, "Mod updated!".to_owned());
                                         set_mod_order_config(&mut ui_state, &mut config_state);
-                                        window_state.edit_open = false;            
+                                        window_state.edit_open = false;
                                     }
                                 },
                                 Err(e) => 
@@ -787,7 +799,7 @@ fn ui_system(mut ui_state: ResMut<ManagerState>,
                                     });        
                                     ui_state.log.add_to_log(LogType::Error, format!("Could not edit mod! {}", e))
                                 }
-                            }        
+                            }
                         }
                         Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not rename directory for edited mod! {}", e)),
                     }
