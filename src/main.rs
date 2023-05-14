@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{path::{PathBuf, Path}, fs, ffi::OsStr, io::Cursor};
+use std::{path::{PathBuf, Path}, fs, ffi::OsStr, io::Cursor, process::{Command, exit}};
 
 use bevy::{prelude::*, window::PresentMode};
 use bevy_egui::{egui::{self, text::LayoutJob, TextFormat, FontId, FontFamily, Color32, Ui, RichText}, EguiContexts, EguiPlugin};
@@ -8,6 +8,7 @@ use egui_dnd::{DragDropUi, utils::shift_vec};
 use ini::{Ini, EscapePolicy};
 use log::{Log, LogType};
 use mod_data::ModData;
+use self_update::cargo_crate_version;
 use steamlocate::SteamDir;
 
 mod mod_data;
@@ -34,6 +35,8 @@ fn main() {
         }))
         .add_plugin(EguiPlugin)
         .add_startup_system(init_log)
+
+        .add_startup_system(init_update)
         .add_startup_system(init_config)
         .add_startup_system(init_steam)
         .add_startup_system(init_mods)
@@ -41,6 +44,23 @@ fn main() {
         .add_startup_system(configure_ui_state_system)
         .add_system(ui_system)
         .run();
+}
+
+fn init_update(mut ui_state: ResMut<ManagerState>) {
+    match helpers::update() {
+        Ok(status) => {
+            match status {
+                self_update::Status::UpToDate(_) => ui_state.log.add_to_log(LogType::Info, "You are on the latest version!".to_owned()),
+                self_update::Status::Updated(_) => 
+                {
+                    ui_state.log.add_to_log(LogType::Info, "Update successful! Restarting...".to_owned());
+                    Command::new("ggxrd-mod-manager.exe").spawn().unwrap();
+                    exit(0)
+                }
+            }
+        }
+        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Update failed! {}", e)),
+    }
 }
 
 #[derive(Default, Resource)]
@@ -285,7 +305,7 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
                                                 mod_data.scripts.push(script.to_owned());
                                             }
                                         }
-                                        None => ui_state.log.add_to_log(LogType::Error, "Could not read find Engine.ScriptPackages in DefaultEngine.ini! Your game installation may be broken.".to_owned()),
+                                        None => (),
                                     }                
 
                                     mod_data.path = Path::join(&ui_state.mods_path, &mod_name.unwrap());
@@ -801,12 +821,32 @@ fn ui_system(mut ui_state: ResMut<ManagerState>,
     .open(&mut window_state.about_open)
     .show(contexts.ctx_mut(), |ui| {
         ui.label(RichText::new("GUILTY GEAR Xrd Mod Manager").size(30.));
-        ui.label("Version 0.1.0")
+        ui.label(format!("Version {}", cargo_crate_version!()))
     });
 }
 
 fn setup_mods_and_play(ui_state: &mut ManagerState)
 {
+    let ini_path = Path::join(&ui_state.game_path, "REDGame").join("Config").join("DefaultEngine.ini");
+    let ini: Result<Ini, ini::Error> = Ini::load_from_file_noescape(&ini_path);
+    match ini {
+        Ok(mut ini) => 
+        {
+            match ini.section_mut(Some("Engine.ScriptPackages"))
+            {
+                Some(section) => {
+                    for _ in section.remove_all("+NativePackages") {}
+                    section.append("+NativePackages", "REDGame");
+                    match ini.write_to_file_policy(&ini_path, EscapePolicy::Nothing) {
+                        Ok(_) => (),
+                        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not write to DefaultEngine.ini! {}", e)),
+                    }    
+                }
+                None => ui_state.log.add_to_log(LogType::Error, "Could not find Engine.ScriptPackages in DefaultEngine.ini! Your game installation may be broken.".to_owned()),
+            }
+    }
+        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not read DefaultEngine.ini! {}", e)),
+    }
     fs::remove_dir_all(Path::join(&ui_state.game_path, "REDGame").join("CookedPCConsole").join("Mods")).unwrap_or_default();
     for mod_data in ui_state.mod_datas.iter().rev() {
         if mod_data.enabled {
@@ -830,29 +870,29 @@ fn setup_mods_and_play(ui_state: &mut ManagerState)
                     continue;
                 }
             }
-        }
-        let ini_path = Path::join(&ui_state.game_path, "REDGame").join("Config").join("DefaultEngine.ini");
-        let ini: Result<Ini, ini::Error> = Ini::load_from_file_noescape(&ini_path);
-        match ini {
-            Ok(mut ini) => {
-                for script in &mod_data.scripts {
-                    match ini.section_mut(Some("Engine.ScriptPackages"))
-                    {
-                        Some(section) => {
-                            if section.get_all("+NativePackages").find(|x| x == script).is_none() {
-                                section.append("+NativePackages", script);
-                                ui_state.log.add_to_log(LogType::Info, format!("Added script package {}!", script))
+            let ini_path: PathBuf = Path::join(&ui_state.game_path, "REDGame").join("Config").join("DefaultEngine.ini");
+            let ini: Result<Ini, ini::Error> = Ini::load_from_file_noescape(&ini_path);
+            match ini {
+                Ok(mut ini) => {
+                    for script in &mod_data.scripts {
+                        match ini.section_mut(Some("Engine.ScriptPackages"))
+                        {
+                            Some(section) => {
+                                if section.get_all("+NativePackages").find(|x| x == script).is_none() {
+                                    section.append("+NativePackages", script);
+                                    ui_state.log.add_to_log(LogType::Info, format!("Added script package {}!", script))
+                                }
                             }
+                            None => ui_state.log.add_to_log(LogType::Error, "Could not read find Engine.ScriptPackages in DefaultEngine.ini! Your game installation may be broken.".to_owned()),
                         }
-                        None => ui_state.log.add_to_log(LogType::Error, "Could not read find Engine.ScriptPackages in DefaultEngine.ini! Your game installation may be broken.".to_owned()),
+                    }
+                    match ini.write_to_file_policy(&ini_path, EscapePolicy::Nothing) {
+                        Ok(_) => (),
+                        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not write to DefaultEngine.ini! {}", e)),
                     }
                 }
-                match ini.write_to_file_policy(&ini_path, EscapePolicy::Nothing) {
-                    Ok(_) => (),
-                    Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not write to DefaultEngine.ini! {}", e)),
-                }
-            }
-            Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not read DefaultEngine.ini! {}", e)),
+                Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not read DefaultEngine.ini! {}", e)),
+            }    
         }
     }
     ui_state.log.add_to_log(LogType::Info, "Mods copied to game directory!".to_string());

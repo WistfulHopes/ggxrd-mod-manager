@@ -1,4 +1,5 @@
 use std::{path::Path, io, fs};
+use self_update::cargo_crate_version;
 
 pub fn copy_recursively(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
     fs::create_dir_all(&destination)?;
@@ -20,4 +21,15 @@ fn add1_char(c: char) -> char {
 
 pub fn add1_str(s: &str) -> String {
     s.chars().map(add1_char).collect()
+}
+
+pub fn update() -> Result<self_update::Status, self_update::errors::Error> {
+    self_update::backends::github::Update::configure()
+        .repo_owner("WistfulHopes")
+        .repo_name("ggxrd-mod-manager")
+        .bin_name("ggxrd-mod-manager.exe")
+        .show_download_progress(true)
+        .current_version(cargo_crate_version!())
+        .build()?
+        .update()
 }

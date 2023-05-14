@@ -1,6 +1,6 @@
 [package]
 name = "ggxrd-mod-manager"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -19,6 +19,7 @@ sevenz-rust = "0.2.10"
 open = "4.1.0"
 unrar = { git = "https://github.com/muja/unrar.rs.git" }
 zip-extract = "0.1.2"
+self_update = { version = "0.36.0", features = ["archive-zip"] }
 
 [profile.dev.package."*"]
 opt-level = 3
