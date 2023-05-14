@@ -54,7 +54,7 @@ fn init_update(mut ui_state: ResMut<ManagerState>) {
                 self_update::Status::Updated(_) => 
                 {
                     ui_state.log.add_to_log(LogType::Info, "Update successful! Restarting...".to_owned());
-                    Command::new("ggxrd-mod-manager-x86_64-pc-windows-msvc.exe").spawn().unwrap();
+                    Command::new("ggxrd-mod-manager.exe").spawn().unwrap();
                     exit(0)
                 }
             }
@@ -438,7 +438,14 @@ fn init_mod(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Confi
         }
     }
     else {
-        ui_state.log.add_to_log(LogType::Warn, format!("Path {} does not exist! Ignoring mod.", &path.display()));
+        let mut mod_data: ModData = ModData::new();
+        mod_data.name = name.clone();
+        mod_data.path = Path::join(&ui_state.mods_path, &name);
+        mod_data.write_data().unwrap_or_default();
+        init_mod_config(config_state, name, &mut mod_data);
+        write_config(ui_state, config_state);
+        ui_state.mod_datas.push(mod_data);
+        ui_state.log.add_to_log(LogType::Warn, format!("No mod ini at path {}! Created one automatically.", &path.display()));
     }
 }
 
