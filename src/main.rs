@@ -252,7 +252,12 @@ fn init_mods(mut ui_state: ResMut<ManagerState>, mut config_state: ResMut<Config
     match fs::create_dir(&ui_state.mods_path)
     {
         Ok(_) => (),
-        Err(e) => ui_state.log.add_to_log(LogType::Error, format!("Could not create Mods directory! {}", e))
+        Err(ref e) => {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {()}
+            else {
+                ui_state.log.add_to_log(LogType::Error, format!("Could not create Mods directory! {}", e))
+            }
+        }
     }
     let mod_section = config_state.config.section(Some("Mods"));
     match mod_section {
@@ -1012,6 +1017,16 @@ fn file_menu(ui_state: &mut ResMut<ManagerState>, config_state: &mut ResMut<Conf
     if ui.button("Create Mod").clicked() {
         window_state.create_open = true;
         ui.close_menu();
+    }
+    if ui.button("Locate Mod").clicked() {
+        if let Some(path) = rfd::FileDialog::new()
+        .add_filter("INI file", &["ini"])
+        .pick_file() {
+            let mut name = path.clone();
+            name.pop();
+            init_mod(ui_state, config_state, name.display().to_string())
+        }
+        ui.close_menu()
     }
 }
 
