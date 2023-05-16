@@ -1,6 +1,6 @@
 [package]
 name = "ggxrd-mod-manager"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,6 @@ eframe = "0.21.3"
 egui_dnd = "0.3.0"
 rfd = "0.11.3"
 steamlocate = { git = "https://github.com/WilliamVenner/steamlocate-rs.git", branch = "dev-v2.0" }
-registry = "1.2.3"
 chrono = "0.4"
 rust-ini = "0.19.0"
 url = "2.3.1"
@@ -22,9 +21,14 @@ zip-extract = "0.1.2"
 self_update = { version = "0.36.0", features = ["archive-zip"] }
 lazy_static = "1.4.0"
 image = "0.24.6"
-
-[profile.dev.package."*"]
-opt-level = 3
+winreg = "0.50.0"
+single-instance = "0.3.3"
+tempfile = "3.5.0"
+reqwest = "0.11.17"
+error-chain = "0.12.4"
+tokio = { version = "1", features = ["full"] }
+regex = "1.8.1"
+sysinfo = "0.29.0"
 
 [build-dependencies]
 embed-resource = "1.6.3"

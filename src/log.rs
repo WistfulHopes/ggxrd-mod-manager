@@ -18,6 +18,18 @@ impl Log {
     {
         match OpenOptions::new()
             .read(true)
+            .write(true)
+            .create(true)
+            .open("Launch.log") {
+                Ok(file) => self.log_file = Some(file),
+                Err(e) => self.add_to_log(LogType::Error, format!("Failed to create log file! {}", e)),
+            }
+    }
+    
+    pub fn append_log(&mut self)
+    {
+        match OpenOptions::new()
+            .read(true)
             .append(true)
             .create(true)
             .open("Launch.log") {
@@ -43,6 +55,7 @@ impl Log {
             self.log_file.as_mut().unwrap().write(&new_text.as_bytes()).unwrap_or_default();
         }
 
+        println!("{}", new_text);
         self.log_text += &new_text;
     }
 }

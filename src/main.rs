@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{path::{PathBuf, Path}, fs, ffi::OsStr, io::Cursor, process::{Command, exit}, sync::Mutex};
+use std::{path::{PathBuf, Path}, fs::{self}, ffi::OsStr, io::Cursor, process::{Command, exit}, sync::Mutex};
 use lazy_static::lazy_static;
 use egui::{self, text::LayoutJob, TextFormat, FontId, FontFamily, Color32, Ui, RichText};
 use egui_dnd::{DragDropUi, utils::shift_vec};
@@ -8,11 +8,16 @@ use ini::{Ini, EscapePolicy};
 use log::{Log, LogType};
 use mod_data::ModData;
 use self_update::cargo_crate_version;
+use single_instance::SingleInstance;
 use steamlocate::SteamDir;
+use sysinfo::{System, SystemExt};
+use tempfile::TempDir;
+use winreg::{RegKey, enums::{RegDisposition::{REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY}, HKEY_CURRENT_USER}};
 
 mod mod_data;
 mod log;
 mod helpers;
+mod download;
 
 lazy_static! {
     static ref CONFIG: Mutex<ConfigState> = Mutex::new(ConfigState::default());
@@ -43,19 +48,60 @@ fn main() -> Result<(), eframe::Error> {
         icon_data: Some(load_icon()),
         ..Default::default()
     };
-    let mut manager = Box::<ManagerState>::default();
+    let mut manager: Box<ManagerState> = Box::<ManagerState>::default();
 
-    manager.console_visible = true;    
-    manager.as_mut().init_log();
-    manager.as_mut().init_update();
-    manager.as_mut().init_config();
-    manager.as_mut().init_steam();
-    manager.as_mut().init_mods();
+    manager.console_visible = true;
+    
+    let modmanager_instance = SingleInstance::new("e3ff4d30-0d65-45c2-8afd-8bff90d8569a").unwrap();
+    let is_running: bool = !modmanager_instance.is_single();
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 2 && args[1] == "-download" {
+        manager.update_mods();
+        if is_running {
+            manager.append_log();
+        }
+        else {
+            manager.init_log();
+        }
+        match prepare_download(args[2].to_owned()) {
+            Ok((path, _tempdir)) => {
+                let mut config: std::sync::MutexGuard<ConfigState> = CONFIG.lock().unwrap();
+                manager.install_mod(path, &mut config);
+            }
+            Err(e) => manager.log.add_to_log(LogType::Error, format!("Could not download mod! {}", e))
+        }
+
+        manager.update_mods();
+        let mut config: std::sync::MutexGuard<ConfigState> = CONFIG.lock().unwrap();
+        manager.set_mod_order_config(&mut config);
+        manager.write_config(&mut config);
+
+        return Ok(())
+    }
+    else if is_running {
+        return Ok(())
+    }
+
+    manager.init_log();
+    manager.init_update();
+    manager.init_steam();
+    match manager.init_registry() {
+        Ok(_) => manager.log.add_to_log(LogType::Info, "Successfully changed registry!".to_owned()),
+        Err(e) => manager.log.add_to_log(LogType::Info, format!("Failed to change registry! {}", e)),
+    }
+
     eframe::run_native(
         "GUILTY GEAR Xrd Mod Manager",
         options,
         Box::new(|_cc| manager),
     )
+}
+
+fn prepare_download (line: String) -> Result<(PathBuf, TempDir), Box<dyn std::error::Error>> {
+    let new_line = line.replace("xrdmodman:", "");
+    let parts: Vec<&str> = new_line.split(",").collect();
+    Ok(download::download_mod(parts[0].to_owned())?)
 }
 
 #[derive(Default)]
@@ -84,6 +130,34 @@ struct WindowState {
 }
 
 impl ManagerState {
+    fn init_registry(&mut self) -> std::io::Result<()> {
+        let hkcr = RegKey::predef(HKEY_CURRENT_USER);
+        let path = Path::new("Software").join("Classes").join("xrdmodman");
+        let (key, disp) = hkcr.create_subkey(&path)?;
+        
+        match disp {
+            REG_CREATED_NEW_KEY => self.log.add_to_log(LogType::Info, "Created url registry key for xrdmodman!".to_owned()),
+            REG_OPENED_EXISTING_KEY => self.log.add_to_log(LogType::Info, "Opened url registry key for xrdmodman!".to_owned()),
+        }
+
+        key.set_value("", &"URL:xrdmodman")?;
+        key.set_value("URL Protocol", &"")?;
+
+        let new_path = path.join("shell").join("open").join("command");
+
+        let (new_key, new_disp) = hkcr.create_subkey(&new_path)?;
+        
+        match new_disp {
+            REG_CREATED_NEW_KEY => self.log.add_to_log(LogType::Info, "Created command registry key for xrdmodman!".to_owned()),
+            REG_OPENED_EXISTING_KEY => self.log.add_to_log(LogType::Info, "Opened command registry key for xrdmodman!".to_owned()),
+        }
+
+        let exe_path = std::env::current_exe()?;
+        let command = r#" -download "%1""#;
+
+        new_key.set_value("", &(r#"""#.to_owned() + &exe_path.display().to_string() + r#"""# + command))
+    }
+
     fn init_update(&mut self) {
         match helpers::update() {
             Ok(status) => {
@@ -146,6 +220,7 @@ impl ManagerState {
             for (i, data) in self.mod_datas.iter_mut().enumerate() {
                 data.order = i;
             }
+            config_needs_update = true;
         }
         (config_needs_update, edit_flag)
     }
@@ -192,7 +267,7 @@ fn update_mod_config(mod_name: String, data: &mut ModData)
 fn remove_mod_config(mod_name: String)
 {
     let mut config = CONFIG.lock().unwrap();
-    config.config.delete(Some(mod_name));
+    config.config.with_section(Some("Mods")).delete(&mod_name);
 }
 
 impl ManagerState {
@@ -206,7 +281,9 @@ impl ManagerState {
 
     fn write_config(&mut self, config: &mut ConfigState)
     {
-        let ini_path = Path::new("config.ini");
+        let mut exe_path = std::env::current_exe().unwrap();
+        exe_path.pop();
+        let ini_path = exe_path.join("config.ini");
         match config.config.write_to_file(ini_path)
         {
             Ok(_) => (),
@@ -249,7 +326,9 @@ impl ManagerState {
     fn init_config(&mut self)
     {
         let mut config = CONFIG.lock().unwrap();
-        let ini_path = Path::new("config.ini");
+        let mut exe_path = std::env::current_exe().unwrap();
+        exe_path.pop();
+        let ini_path = exe_path.join("config.ini");
         if ini_path.exists() {
             let ini = Ini::load_from_file_noescape(ini_path);
             match ini {
@@ -263,9 +342,13 @@ impl ManagerState {
         } 
     }
 
-    fn init_mods(&mut self)
+    fn update_mods(&mut self)
     {
-        self.mods_path = Path::join(&std::env::current_dir().unwrap(), "Mods");
+        self.init_config();
+        self.mod_datas.clear();
+        let mut dir = std::env::current_exe().unwrap();
+        dir.pop();
+        self.mods_path = Path::join(&dir, "Mods");
         match fs::create_dir(&self.mods_path)
         {
             Ok(_) => (),
@@ -276,8 +359,9 @@ impl ManagerState {
                 }
             }
         }
-        let mut config = CONFIG.lock().unwrap();
+        let mut config: std::sync::MutexGuard<ConfigState> = CONFIG.lock().unwrap();
         let mod_section = config.config.section(Some("Mods"));
+        let mut config_requires_update = false;
         match mod_section {
             Some(mod_section) => {
                 for mod_entry in mod_section.iter() {
@@ -347,37 +431,52 @@ impl ManagerState {
                                     },
                                     None => {
                                         self.log.add_to_log(LogType::Error, format!("The mod ini at path {} doesn't have a description section! Ignoring mod.", path.display()));
+                                        config_requires_update = true;
                                         continue
                                     }
                                 }
                             },
                             Err(_) => {
                                 self.log.add_to_log(LogType::Error, format!("Ini at path {} does not exist! Ignoring mod.", path.display()));
+                                config_requires_update = true;
                                 continue
                             }
                         }
                     }
                     else {
                         self.log.add_to_log(LogType::Error, format!("Path {} does not exist! Ignoring mod.", path.display()));
+                        config_requires_update = true;
                     }
                 }
             }
-            None => self.log.add_to_log(LogType::Warn, "No mods found in the config ini! You probably need to install a mod.".to_owned()),
+            None => (),
         }
         for mod_data in &mut self.mod_datas {
             init_mod_config(mod_data.name.clone(), mod_data, &mut config);
         }
-        self.set_mod_order_config(&mut config);
-        self.write_config(&mut config);
+        if config_requires_update {
+            self.set_mod_order_config(&mut config)
+        }
     }
 
     fn init_log(&mut self) {
         self.log.init_log();
-        self.log.add_to_log(LogType::Info, "Launched GUILTY GEAR Xrd Mod Manager".to_owned());
+        self.log.add_to_log(LogType::Info, "Launched GUILTY GEAR Xrd Mod Manager.".to_owned());
+    }
+
+    fn append_log(&mut self) {
+        self.log.append_log();
+        self.log.add_to_log(LogType::Info, "Another instance of the mod manager was opened!".to_owned());
     }
 
     fn init_mod(&mut self, name: String, config: &mut ConfigState)
     {
+        for mod_data in &self.mod_datas {
+            if name == mod_data.name {
+                return
+            }
+        }
+
         let path = Path::join(&self.mods_path, &name).join("mod.ini");
         if path.exists()
         {
@@ -471,6 +570,71 @@ impl ManagerState {
         }
     }
 
+    fn install_mod(&mut self, path: PathBuf, config: &mut ConfigState)
+    {
+        let file_type: i32 = match path.extension().and_then(OsStr::to_str)
+        {
+            Some("zip") => 0,
+            Some("7z") => 1,
+            Some("rar") => 2,
+            _ => 3,
+        };
+        let file_stem = match path.file_stem() {
+            Some(file_stem) => file_stem,
+            None => {
+                self.log.add_to_log(LogType::Error, "File has no name!".to_owned());
+                return
+            }
+        };
+        match file_type {
+            0 => {
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        match zip_extract::extract(Cursor::new(bytes), 
+                            &Path::join(&self.mods_path, file_stem), true)
+                        {
+                            Ok(_) => self.init_mod(file_stem.to_str().unwrap().to_owned(), config),
+                            Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
+                        }
+                    }
+                    Err(e) => {
+                        self.log.add_to_log(LogType::Error, format!("Could not read archive! {}", e))
+                    }
+                }
+            }
+            1 => {
+                match sevenz_rust::decompress_file(&path, Path::join(&self.mods_path, file_stem))
+                {
+                    Ok(_) => self.init_mod(file_stem.to_str().unwrap().to_owned(), config),
+                    Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
+                }        
+            }
+            2 => {
+                match unrar::Archive::new(&path) {
+                    Ok(archive) => 
+                    {
+                        match archive.extract_to(Path::join(&self.mods_path, file_stem))
+                        {
+                            Ok(mut archive) => {
+                                match archive.process() {
+                                    Ok(_) => self.init_mod(file_stem.to_str().unwrap().to_owned(), config),
+                                    Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
+                                }
+                            },
+                            Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
+                        }        
+                    }
+                    Err(e) => {
+                        self.log.add_to_log(LogType::Error, format!("Could not read archive! {}", e))
+                    }
+                }
+            }
+            _ => {
+                self.log.add_to_log(LogType::Error, "Invalid file extension!".to_string())
+            }
+        }
+    }
+
     fn file_menu(&mut self, ui: &mut Ui, config: &mut ConfigState)
     {
         if ui.button("Install Mod").clicked() {
@@ -480,71 +644,7 @@ impl ManagerState {
             .add_filter("7Z archive", &["7z"])
             .add_filter("RAR archive", &["rar"])
             .pick_file() {
-                let file_type: i32 = match path.extension().and_then(OsStr::to_str)
-                {
-                    Some("zip") => 0,
-                    Some("7z") => 1,
-                    Some("rar") => 2,
-                    _ => 3,
-                };
-                let file_stem = match path.file_stem() {
-                    Some(file_stem) => file_stem,
-                    None => {
-                        self.log.add_to_log(LogType::Error, "File has no name!".to_owned());
-                        return
-                    }
-                };
-                match file_type {
-                    0 => {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                match zip_extract::extract(Cursor::new(bytes), 
-                                    &Path::join(&self.mods_path, file_stem), true)
-                                {
-                                    Ok(_) => {
-                                        self.init_mod(file_stem.to_str().unwrap().to_owned(), config)
-                                    },
-                                    Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
-                                }
-                            }
-                            Err(e) => {
-                                self.log.add_to_log(LogType::Error, format!("Could not read archive! {}", e))
-                            }
-                        }
-                    }
-                    1 => {
-                        match sevenz_rust::decompress_file(&path, Path::join(&self.mods_path, file_stem))
-                        {
-                            Ok(_) => {
-                                self.init_mod(file_stem.to_str().unwrap().to_owned(), config)
-                            },
-                            Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
-                        }        
-                    }
-                    2 => {
-                        match unrar::Archive::new(&path) {
-                            Ok(archive) => 
-                            {
-                                match archive.extract_to(Path::join(&self.mods_path, file_stem))
-                                {
-                                    Ok(mut archive) => {
-                                        match archive.process() {
-                                            Ok(_) => self.init_mod(file_stem.to_str().unwrap().to_owned(), config),
-                                            Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
-                                        }
-                                    },
-                                    Err(e) => self.log.add_to_log(LogType::Error, format!("Could not extract archive! {}", e))
-                                }        
-                            }
-                            Err(e) => {
-                                self.log.add_to_log(LogType::Error, format!("Could not read archive! {}", e))
-                            }
-                        }
-                    }
-                    _ => {
-                        self.log.add_to_log(LogType::Error, "Invalid file extension!".to_string())
-                    }
-                }
+                self.install_mod(path, config)
             };
             ui.close_menu();
         }
@@ -771,6 +871,15 @@ impl eframe::App for ManagerState {
     
                 }*/
                 if ui.small_button("▶️Launch Game").clicked() {
+                    let system = System::new_all();
+                    if system.processes_by_exact_name("GuiltyGearXrd.exe").peekable().peek().is_some()
+                    {
+                        match Command::new("taskkill").args(["/f", "/im", "GuiltyGearXrd.exe"]).spawn()
+                        {
+                            Ok(_) => self.log.add_to_log(LogType::Info, "Stopping existing Guilty Gear Xrd process if it exists!".to_owned()),
+                            Err(e) => self.log.add_to_log(LogType::Info, format!("Could not stop Guilty Gear Xrd process! {}", e)),
+                        }    
+                    }
                     self.setup_mods_and_play();
                 }
             });
@@ -789,7 +898,6 @@ impl eframe::App for ManagerState {
         });
     
         let mut config_needs_update = false;
-    
         let mut edit_flag = false;
     
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1055,6 +1163,15 @@ impl eframe::App for ManagerState {
             ui.label(RichText::new("GUILTY GEAR Xrd Mod Manager").size(30.));
             ui.label(format!("Version {}", cargo_crate_version!()))
         });
+
+        self.update_mods();
+    }
+
+    fn on_close_event(&mut self) -> bool {
+        let mut config = CONFIG.lock().unwrap();
+        self.set_mod_order_config(&mut config);
+        self.write_config(&mut config);
+        true
     }        
 }
 
